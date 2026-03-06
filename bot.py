@@ -106,6 +106,7 @@ def check_single_imei(imei: str) -> str:
     imei = imei.strip()
     if not (14 <= len(imei) <= 15 and imei.isdigit()):
         return f"⚠️ Invalid IMEI: {imei} (must be 14–15 digits)"
+    
     try:
         challenge_data = fetch_challenge()
         number, took = solve_pow(
@@ -114,27 +115,61 @@ def check_single_imei(imei: str) -> str:
             maxnumber=challenge_data["maxnumber"]
         )
         altcha = build_altcha_token(challenge_data, number, took)
+        
         full_url = f"{VERIFY_URL}?altcha={altcha}"
         payload = [imei]
         r = session.post(full_url, data=json.dumps(payload), timeout=15)
         r.raise_for_status()
+        
         data = r.json()
         if "IMEI_CHECK_LIST" not in data or not data["IMEI_CHECK_LIST"]:
             return f"❌ {imei} → No data returned"
+        
         item = data["IMEI_CHECK_LIST"][0]
         dev = item.get("deviceInfo", {})
+        
         brand = dev.get("gsmaBrandName", "—")
         model = dev.get("gsmaModelName", "—")
         status = item.get("blockState", "UNKNOWN")
         white = "Yes" if item.get("WhiteList") else "No"
         black = "Yes" if item.get("BlackList") else "No"
-        return (
+        
+        # ───────────────────────────────────────────────
+        # Extra fields you requested
+        # ───────────────────────────────────────────────
+        gsma_model_name      = dev.get("gsmaModelName", "—")
+        gsma_marketing_name  = dev.get("gsmaMarketingName", "—")
+        gsma_allocation_date = dev.get("gsmaAllocationDate", "—")
+        gsma_os              = dev.get("gsmaOperatingSystem", "—")
+        
+        # WhiteList info (usually first entry)
+        initiator = "—"
+        registration_date = "—"
+        if item.get("WhiteList") and isinstance(item["WhiteList"], list) and len(item["WhiteList"]) > 0:
+            wl = item["WhiteList"][0]
+            initiator = wl.get("initiator", "—")
+            registration_date = wl.get("registrationDate", "—")
+        
+        # ───────────────────────────────────────────────
+        # Main result (your original format)
+        # ───────────────────────────────────────────────
+        result = (
             f"📱 **{imei}**\n"
             f"• Device: {brand} {model}\n"
             f"• Block status: {status}\n"
             f"• Whitelisted: {white}\n"
-            f"• Blacklisted: {black}"
+            f"• Blacklisted: {black}\n\n"
+            f"**Extra Device & Registration Info:**\n"
+            f"• Internal Model: {gsma_model_name}\n"
+            f"• Marketing Name: {gsma_marketing_name}\n"
+            f"• Allocation Date: {gsma_allocation_date}\n"
+            f"• Operating System: {gsma_os}\n"
+            f"• Registered by: {initiator}\n"
+            f"• Registration Date: {registration_date}"
         )
+        
+        return result
+    
     except Exception as e:
         logger.error(f"IMEI check failed for {imei}: {e}")
         return f"❌ {imei} → Error: {str(e)}"
@@ -228,3 +263,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
