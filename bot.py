@@ -118,7 +118,7 @@ def check_single_imei(imei: str) -> str:
         
         full_url = f"{VERIFY_URL}?altcha={altcha}"
         payload = [imei]
-        r = session.post(full_url, data=json.dumps(payload), timeout=60)
+        r = session.post(full_url, data=json.dumps(payload), timeout=15)
         r.raise_for_status()
         
         data = r.json()
@@ -130,49 +130,46 @@ def check_single_imei(imei: str) -> str:
         
         brand = dev.get("gsmaBrandName", "—")
         model = dev.get("gsmaModelName", "—")
-        
-        block_status = item.get("blockState", "UNKNOWN")
-        whitelisted   = "Yes" if item.get("WhiteList") else "No"
-        blacklisted   = "Yes" if item.get("BlackList") else "No"
-        
-        # ───────────────────────────────────────────────
-        # Vital checks with ✅ / ❌ indicators
-        # ───────────────────────────────────────────────
-        block_ok  = block_status == "UNBLOCKED"
-        white_ok  = whitelisted   == "Yes"
-        black_ok  = blacklisted   == "No"
-        
-        block_line  = f"{'✅' if block_ok else '❌'} Block status: {block_status}"
-        white_line  = f"{'✅' if white_ok else '❌'} Whitelisted: {whitelisted}"
-        black_line  = f"{'✅' if black_ok else '❌'} Blacklisted: {blacklisted}"
+        status = item.get("blockState", "UNKNOWN")
+        white = "Yes" if item.get("WhiteList") else "No"
+        black = "Yes" if item.get("BlackList") else "No"
         
         # ───────────────────────────────────────────────
-        # Main result
+        # Extra fields you requested
+        # ───────────────────────────────────────────────
+        gsma_model_name      = dev.get("gsmaModelName", "—")
+        gsma_marketing_name  = dev.get("gsmaMarketingName", "—")
+        gsma_allocation_date = dev.get("gsmaAllocationDate", "—")
+        gsma_os              = dev.get("gsmaOperatingSystem", "—")
+        
+        # WhiteList info (usually first entry)
+        initiator = "—"
+        registration_date = "—"
+        if item.get("WhiteList") and isinstance(item["WhiteList"], list) and len(item["WhiteList"]) > 0:
+            wl = item["WhiteList"][0]
+            initiator = wl.get("initiator", "—")
+            registration_date = wl.get("registrationDate", "—")
+        
+        # ───────────────────────────────────────────────
+        # Main result (your original format)
         # ───────────────────────────────────────────────
         result = (
             f"📱 **{imei}**\n"
             f"• Device: {brand} {model}\n"
-            f"{block_line}\n"
-            f"{white_line}\n"
-            f"{black_line}"
+            f"• Block status: {status}\n"
+            f"• Whitelisted: {white}\n"
+            f"• Blacklisted: {black}\n\n"
+            f"**Extra Device & Registration Info:**\n"
+            f"• Internal Model: {gsma_model_name}\n"
+            f"• Marketing Name: {gsma_marketing_name}\n"
+            f"• Allocation Date: {gsma_allocation_date}\n"
+            f"• Operating System: {gsma_os}\n"
+            f"• Registered by: {initiator}\n"
+            f"• Registration Date: {registration_date}"
         )
-        
-        # Optional: add extra info section if you still want it
-        # (comment out or remove if not needed)
-        if item.get("WhiteList") and isinstance(item["WhiteList"], list) and len(item["WhiteList"]) > 0:
-            wl = item["WhiteList"][0]
-            initiator = wl.get("initiator", "—")
-            reg_date  = wl.get("registrationDate", "—")
-            result += (
-                f"\n\n**Extra Info:**\n"
-                f"• Registered by: {initiator}\n"
-                f"• Registration Date: {reg_date}"
-            )
         
         return result
     
-    except requests.Timeout:
-        return f"⌛ {imei} → Timeout after 1 minute (API slow or blocked)"
     except Exception as e:
         logger.error(f"IMEI check failed for {imei}: {e}")
         return f"❌ {imei} → Error: {str(e)}"
@@ -265,5 +262,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
