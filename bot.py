@@ -19,7 +19,6 @@ from telegram.ext import (
 # ───────────────────────────────────────────────
 # CONFIG
 # ───────────────────────────────────────────────
-
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 if not BOT_TOKEN:
     raise ValueError("BOT_TOKEN environment variable is not set!")
@@ -39,10 +38,8 @@ HEADERS = {
     "sec-ch-ua-platform": '"Windows"'
 }
 
-# Adjust according to how aggressively you want to query (Render IP might get blocked faster if too high)
 MAX_CONCURRENT_CHECKS = 3
 
-# Global session → connection pooling + keep-alive
 session = requests.Session()
 session.headers.update(HEADERS)
 
@@ -53,7 +50,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ───────────────────────────────────────────────
-# ALTCHA + CEIR logic
+# ALTCHA + CEIR logic (unchanged)
 # ───────────────────────────────────────────────
 
 def fetch_challenge() -> dict:
@@ -78,20 +75,16 @@ def solve_pow_worker(args: Tuple[str, str, int, int]) -> Optional[int]:
 
 def solve_pow(salt: str, challenge: str, maxnumber: int, workers: int = 4) -> Tuple[int, int]:
     start_time = time.time()
-
     chunk_size = max(1, (maxnumber + 1) // workers)
     ranges = [
         (salt, challenge, i * chunk_size, min((i + 1) * chunk_size - 1, maxnumber))
         for i in range(workers)
     ]
-
     with ThreadPoolExecutor(max_workers=workers) as pool:
         results = list(pool.map(solve_pow_worker, ranges))
-
     number = next((res for res in results if res is not None), None)
     if number is None:
         raise ValueError("No PoW solution found — challenge may be expired or invalid")
-
     took_ms = int((time.time() - start_time) * 1000)
     return number, took_ms
 
@@ -113,7 +106,6 @@ def check_single_imei(imei: str) -> str:
     imei = imei.strip()
     if not (14 <= len(imei) <= 15 and imei.isdigit()):
         return f"⚠️ Invalid IMEI: {imei} (must be 14–15 digits)"
-
     try:
         challenge_data = fetch_challenge()
         number, took = solve_pow(
@@ -122,26 +114,20 @@ def check_single_imei(imei: str) -> str:
             maxnumber=challenge_data["maxnumber"]
         )
         altcha = build_altcha_token(challenge_data, number, took)
-
         full_url = f"{VERIFY_URL}?altcha={altcha}"
         payload = [imei]
-
         r = session.post(full_url, data=json.dumps(payload), timeout=15)
         r.raise_for_status()
-
         data = r.json()
         if "IMEI_CHECK_LIST" not in data or not data["IMEI_CHECK_LIST"]:
             return f"❌ {imei} → No data returned"
-
         item = data["IMEI_CHECK_LIST"][0]
         dev = item.get("deviceInfo", {})
-
         brand = dev.get("gsmaBrandName", "—")
         model = dev.get("gsmaModelName", "—")
         status = item.get("blockState", "UNKNOWN")
         white = "Yes" if item.get("WhiteList") else "No"
         black = "Yes" if item.get("BlackList") else "No"
-
         return (
             f"📱 **{imei}**\n"
             f"• Device: {brand} {model}\n"
@@ -149,14 +135,13 @@ def check_single_imei(imei: str) -> str:
             f"• Whitelisted: {white}\n"
             f"• Blacklisted: {black}"
         )
-
     except Exception as e:
         logger.error(f"IMEI check failed for {imei}: {e}")
         return f"❌ {imei} → Error: {str(e)}"
 
 
 # ───────────────────────────────────────────────
-# Telegram handlers
+# Telegram handlers (unchanged)
 # ───────────────────────────────────────────────
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -173,22 +158,18 @@ async def check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not context.args:
         await update.message.reply_text("Please provide at least one IMEI.\nExample: /check 865163040845331")
         return
-
     imei_list = context.args[:10]  # safety cap
     status_msg = await update.message.reply_text(
         f"🔍 Checking {len(imei_list)} IMEI(s) …"
     )
-
     results = []
     with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_CHECKS) as executor:
         future_to_imei = {
             executor.submit(check_single_imei, imei): imei
             for imei in imei_list
         }
-
         for future in as_completed(future_to_imei):
             results.append(future.result())
-
     # Try to keep original order
     ordered = []
     for imei in imei_list:
@@ -196,10 +177,13 @@ async def check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             if imei in res:
                 ordered.append(res)
                 break
-
     text = "CEIR Results:\n\n" + "\n\n".join(ordered)
     await status_msg.edit_text(text)
 
+
+# ───────────────────────────────────────────────
+# MAIN - Webhook mode for Render Web Service (free tier compatible)
+# ───────────────────────────────────────────────
 
 def main():
     if not BOT_TOKEN:
@@ -211,8 +195,35 @@ def main():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("check", check))
 
-    logger.info("Starting bot (polling mode)...")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    # Render-specific webhook configuration
+    PORT = int(os.environ.get("PORT", 10000))  # Render assigns this
+    HOSTNAME = os.environ.get("RENDER_EXTERNAL_HOSTNAME")
+
+    if not HOSTNAME:
+        # For local testing fallback (won't work on Render)
+        logger.warning("RENDER_EXTERNAL_HOSTNAME not found → local dev mode")
+        HOSTNAME = "localhost"
+        WEBHOOK_URL = f"http://{HOSTNAME}:{PORT}/webhook"
+    else:
+        WEBHOOK_URL = f"https://{HOSTNAME}/webhook"
+
+    WEBHOOK_PATH = "/webhook"
+
+    logger.info(f"Webhook URL: {WEBHOOK_URL}")
+    logger.info(f"Listening on 0.0.0.0:{PORT}")
+
+    # Set the webhook (Telegram remembers it → safe to call on every deploy)
+    application.bot.set_webhook(url=WEBHOOK_URL)
+
+    # Start webhook server (this replaces run_polling)
+    application.run_webhook(
+        listen="0.0.0.0",
+        port=PORT,
+        url_path=WEBHOOK_PATH,
+        webhook_url=WEBHOOK_URL,
+        drop_pending_updates=True,          # Optional: clear queue on restart
+        allowed_updates=Update.ALL_TYPES,
+    )
 
 
 if __name__ == "__main__":
